@@ -9,10 +9,20 @@ import vulkan_hpp;
 
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+
+const std::vector<char const *> validationLayers = {
+    "VK_LAYER_KHRONOS_validation"};
+
+#ifdef NDEBUG
+const bool enableValidationLayers = false;
+#else
+const bool enableValidationLayers = true;
+#endif
 
 class HelloTriangleApplication {
 public:
@@ -27,6 +37,7 @@ private:
   GLFWwindow *window = nullptr;
   vk::raii::Context context;
   vk::raii::Instance instance = nullptr;
+  vk::PhysicalDevice physicalDevice = nullptr;
 
   void initWindow() {
     glfwInit();
@@ -37,7 +48,10 @@ private:
     window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
   }
 
-  void initVulkan() { createInstance(); }
+  void initVulkan() {
+    createInstance();
+    pickPhysicalDevice();
+  }
 
   void createInstance() {
     constexpr vk::ApplicationInfo appInfo{
@@ -48,9 +62,29 @@ private:
         .apiVersion = vk::ApiVersion14,
     };
 
-    uint32_t glfwExtensionCount = 0;
-    auto glfwExtensions =
-        glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    // Get the required layers
+    std::vector<char const *> requiredLayers;
+    if (enableValidationLayers) {
+      requiredLayers.assign(validationLayers.begin(), validationLayers.end());
+    }
+
+    // Check if the required layers are supported by the Vulkan implementation.
+    auto layerProperties = context.enumerateInstanceLayerProperties();
+    auto unsupportedLayerIt = std::ranges::find_if(
+        requiredLayers, [&layerProperties](auto const &requiredLayer) {
+          return std::ranges::none_of(
+              layerProperties, [requiredLayer](auto const &layerProperty) {
+                return std::strcmp(layerProperty.layerName, requiredLayer) == 0;
+              });
+        });
+    if (unsupportedLayerIt != requiredLayers.end()) {
+      throw std::runtime_error("Required layer not supported: " +
+                               std::string(*unsupportedLayerIt));
+    }
+
+    // Get the required extensions.
+
+    auto requiredExtensions = getRequiredInstanceExtensions();
 
     auto extensionProperties = context.enumerateInstanceExtensionProperties();
 
@@ -59,25 +93,85 @@ private:
       std::cout << "\t" << extension.extensionName << std::endl;
     }
 
-    for (uint32_t i = 0; i < glfwExtensionCount; i++) {
-      if (std::ranges::none_of(
-              extensionProperties, [glfwExtension = glfwExtensions[i]](
-                                       auto const &extensionProperty) {
+    // Check if the required extensions are supported by the Vulkan
+    // implementation.
+    auto unsupportedPropertyIt = std::ranges::find_if(
+        requiredExtensions,
+        [&extensionProperties](auto const &requiredExtension) {
+          return std::ranges::none_of(
+              extensionProperties,
+              [requiredExtension](auto const &extensionProperty) {
                 return std::strcmp(extensionProperty.extensionName,
-                                   glfwExtension) == 0;
-              })) {
-        throw std::runtime_error("Required GLFW extension is not supported: " +
-                                 std::string(glfwExtensions[i]));
-      }
+                                   requiredExtension) == 0;
+              });
+        });
+    if (unsupportedPropertyIt != requiredExtensions.end()) {
+      throw std::runtime_error("Required extension not supported: " +
+                               std::string(*unsupportedPropertyIt));
     }
 
     vk::InstanceCreateInfo createInfo{
         .pApplicationInfo = &appInfo,
-        .enabledExtensionCount = glfwExtensionCount,
-        .ppEnabledExtensionNames = glfwExtensions,
+        .enabledLayerCount = static_cast<uint32_t>(requiredLayers.size()),
+        .ppEnabledLayerNames = requiredLayers.data(),
+        .enabledExtensionCount =
+            static_cast<uint32_t>(requiredExtensions.size()),
+        .ppEnabledExtensionNames = requiredExtensions.data(),
     };
 
     instance = vk::raii::Instance(context, createInfo);
+  }
+
+  std::vector<const char *> getRequiredInstanceExtensions() {
+    uint32_t glfwExtensionCount = 0;
+    auto glfwExtensions =
+        glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    std::vector extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+
+    return extensions;
+  }
+
+  void pickPhysicalDevice() {
+    auto physicalDevices = instance.enumeratePhysicalDevices();
+    if (physicalDevices.empty()) {
+      throw std::runtime_error("Failed to find a suitable physical device");
+    }
+
+    // use an ordered map to automatically sort candidates by increasing score
+    std::multimap<int, vk::raii::PhysicalDevice> candidates;
+    for (const auto &pd : physicalDevices) {
+      auto deviceProperties = pd.getProperties();
+      auto deviceFeatures = pd.getFeatures();
+
+      uint32_t score = 0;
+      // Discrete GPU
+      if (deviceProperties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
+        int score = 1000;
+      }
+
+      // max possible size of textures affects graphics quality
+      score += deviceProperties.limits.maxImageDimension2D;
+
+      if (!deviceFeatures.geometryShader) {
+        continue;
+      }
+
+      candidates.insert(std::make_pair(score, pd));
+    }
+
+    if (!candidates.empty() && candidates.rbegin()->first > 0) {
+      physicalDevice = candidates.rbegin()->second;
+    } else {
+      throw std::runtime_error("Failed to find a suitable physical device");
+    }
+  }
+
+  bool isDeviceSuitable(vk::raii::PhysicalDevice const &device) {
+    auto deviceProperties = device.getProperties();
+    auto deviceFeatures = device.getFeatures();
+    return deviceProperties.deviceType ==
+               vk::PhysicalDeviceType::eDiscreteGpu &&
+           deviceFeatures.geometryShader;
   }
 
   void mainLoop() {
