@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/home/will/code/anduril/vulkan/Vulkan-Tutorial/HelloTriangle/template/build",
+    "command": "/usr/bin/c++ -DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1 -DVULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS -DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1 -I/usr/include/stb -I/home/will/vulkan/1.4.350.1/x86_64/include -std=gnu++20 -c /home/will/code/anduril/vulkan/Vulkan-Tutorial/HelloTriangle/template/main.cpp",
+    "file": "/home/will/code/anduril/vulkan/Vulkan-Tutorial/HelloTriangle/template/main.cpp"
+  }
+]

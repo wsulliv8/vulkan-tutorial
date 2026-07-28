@@ -1,0 +1,6 @@
+CompileFlags:
+  Add:
+    - -I/home/will/vulkan/1.4.350.1/x86_64/include
+    - -std=c++20
+    - -DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
+    - -DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
