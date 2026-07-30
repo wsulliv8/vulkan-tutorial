@@ -62,6 +62,8 @@ private:
   vk::SurfaceFormatKHR swapChainSurfaceFormat;
   vk::Extent2D swapChainExtent;
   std::vector<vk::raii::ImageView> swapChainImageViews;
+  vk::raii::PipelineLayout pipelineLayout = nullptr;
+  vk::raii::Pipeline graphicsPipeline = nullptr;
 
   std::vector<const char *> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName};
@@ -404,18 +406,18 @@ private:
       imageViewCreateInfo.image = image;
       swapChainImageViews.emplace_back(device, imageViewCreateInfo);
     }
+  }
 
-    void mainLoop() {
-      while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-      }
+  void mainLoop() {
+    while (!glfwWindowShouldClose(window)) {
+      glfwPollEvents();
     }
+  }
 
-    void cleanup() {
-      glfwDestroyWindow(window);
+  void cleanup() {
+    glfwDestroyWindow(window);
 
-      glfwTerminate();
-    }
+    glfwTerminate();
   }
 
   [[nodiscard]] vk::raii::ShaderModule
@@ -441,16 +443,100 @@ private:
         .module = shaderModule,
         .pName = "fragMain",
     };
+    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo,
+                                                        fragShaderStageInfo};
+
+    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
+                                                   vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamicState{
+        .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+        .pDynamicStates = dynamicStates.data()};
+    vk::PipelineViewportStateCreateInfo viewportState{
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+    vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+        .topology = vk::PrimitiveTopology::eTriangleList};
+
+    vk::Viewport viewport{
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(swapChainExtent.width),
+        .height = static_cast<float>(swapChainExtent.height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    vk::Rect2D scissor{
+        .offset = vk::Offset2D{0, 0},
+        .extent = swapChainExtent,
+    };
+
+    vk::PipelineRasterizationStateCreateInfo rasterizer{
+        .depthClampEnable = vk::False,
+        .rasterizerDiscardEnable = vk::False,
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eBack,
+        .frontFace = vk::FrontFace::eClockwise,
+        .depthBiasEnable = vk::False,
+        .lineWidth = 1.0f,
+    };
+    vk::PipelineMultisampleStateCreateInfo multisampling{
+        .rasterizationSamples = vk::SampleCountFlagBits::e1,
+        .sampleShadingEnable = vk::False,
+    };
+    vk::PipelineColorBlendAttachmentState colorBlendAttachment{
+        .blendEnable = vk::False,
+        .colorWriteMask =
+            vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
+    vk::PipelineColorBlendStateCreateInfo colorBlending{
+        .logicOpEnable = vk::False,
+        .logicOp = vk::LogicOp::eCopy,
+        .attachmentCount = 1,
+        .pAttachments = &colorBlendAttachment,
+    };
+
+    vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+        .setLayoutCount = 0,
+        .pushConstantRangeCount = 0,
+    };
+    pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+    vk::StructureChain<vk::GraphicsPipelineCreateInfo,
+                       vk::PipelineRenderingCreateInfo>
+        pipelineCreateInfoChain = {
+            {.stageCount = 2,
+             .pStages = shaderStages,
+             .pVertexInputState = &vertexInputInfo,
+             .pInputAssemblyState = &inputAssembly,
+             .pViewportState = &viewportState,
+             .pRasterizationState = &rasterizer,
+             .pMultisampleState = &multisampling,
+             .pColorBlendState = &colorBlending,
+             .pDynamicState = &dynamicState,
+             .layout = pipelineLayout,
+             .renderPass = nullptr},
+            {.colorAttachmentCount = 1,
+             .pColorAttachmentFormats = &swapChainSurfaceFormat.format}};
+
+    graphicsPipeline = vk::raii::Pipeline(
+        device, nullptr,
+        pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
+  }
+};
+
+int main() {
+  try {
+    HelloTriangleApplication app;
+    app.run();
+  } catch (const std::exception &e) {
+    std::cerr << e.what() << std::endl;
+    return EXIT_FAILURE;
   }
 
-  int main() {
-    try {
-      HelloTriangleApplication app;
-      app.run();
-    } catch (const std::exception &e) {
-      std::cerr << e.what() << std::endl;
-      return EXIT_FAILURE;
-    }
-
-    return EXIT_SUCCESS;
-  }
+  return EXIT_SUCCESS;
+}
