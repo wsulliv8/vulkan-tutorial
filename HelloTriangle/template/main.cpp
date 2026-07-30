@@ -10,6 +10,7 @@ import vulkan_hpp;
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -26,6 +27,18 @@ const bool enableValidationLayers = false;
 #else
 const bool enableValidationLayers = true;
 #endif
+
+static std::vector<char> readFile(const std::string &filename) {
+  std::ifstream file(filename, std::ios::ate | std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Failed to open file: " + filename);
+  }
+  std::vector<char> buffer(file.tellg());
+  file.seekg(0, std::ios::beg);
+  file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+  file.close();
+  return buffer;
+}
 
 class HelloTriangleApplication {
 public:
@@ -67,6 +80,9 @@ private:
     createSurface();
     pickPhysicalDevice();
     createLogicalDevice();
+    createSwapChain();
+    createImageViews();
+    createGraphicsPipeline();
   }
 
   void createInstance() {
@@ -370,27 +386,71 @@ private:
     swapChainImages = swapChain.getImages();
   }
 
-  void mainLoop() {
-    while (!glfwWindowShouldClose(window)) {
-      glfwPollEvents();
+  void createImageViews() {
+    assert(!swapChainImages.empty());
+    vk::ImageViewCreateInfo imageViewCreateInfo{
+        .viewType = vk::ImageViewType::e2D,
+        .format = swapChainSurfaceFormat.format,
+        .subresourceRange =
+            {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+    };
+    for (auto &image : swapChainImages) {
+      imageViewCreateInfo.image = image;
+      swapChainImageViews.emplace_back(device, imageViewCreateInfo);
+    }
+
+    void mainLoop() {
+      while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+      }
+    }
+
+    void cleanup() {
+      glfwDestroyWindow(window);
+
+      glfwTerminate();
     }
   }
 
-  void cleanup() {
-    glfwDestroyWindow(window);
-
-    glfwTerminate();
-  }
-};
-
-int main() {
-  try {
-    HelloTriangleApplication app;
-    app.run();
-  } catch (const std::exception &e) {
-    std::cerr << e.what() << std::endl;
-    return EXIT_FAILURE;
+  [[nodiscard]] vk::raii::ShaderModule
+  createShaderModule(const std::vector<char> &code) const {
+    vk::ShaderModuleCreateInfo createInfo{
+        .codeSize = code.size() * sizeof(char),
+        .pCode = reinterpret_cast<const uint32_t *>(code.data()),
+    };
+    return vk::raii::ShaderModule(device, createInfo);
   }
 
-  return EXIT_SUCCESS;
-}
+  void createGraphicsPipeline() {
+    auto shaderCode = readFile("shaders/slang.spv");
+    vk::raii::ShaderModule shaderModule = createShaderModule(shaderCode);
+
+    vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
+        .stage = vk::ShaderStageFlagBits::eVertex,
+        .module = shaderModule,
+        .pName = "vertMain",
+    };
+    vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
+        .stage = vk::ShaderStageFlagBits::eFragment,
+        .module = shaderModule,
+        .pName = "fragMain",
+    };
+  }
+
+  int main() {
+    try {
+      HelloTriangleApplication app;
+      app.run();
+    } catch (const std::exception &e) {
+      std::cerr << e.what() << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+  }
