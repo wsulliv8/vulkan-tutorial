@@ -56,17 +56,26 @@ private:
   vk::raii::SurfaceKHR surface = nullptr;
   vk::raii::PhysicalDevice physicalDevice = nullptr;
   vk::raii::Device device = nullptr;
-  vk::raii::Queue graphicsQueue = nullptr;
   vk::raii::SwapchainKHR swapChain = nullptr;
+
   std::vector<vk::Image> swapChainImages;
-  vk::SurfaceFormatKHR swapChainSurfaceFormat;
-  vk::Extent2D swapChainExtent;
   std::vector<vk::raii::ImageView> swapChainImageViews;
+  vk::SurfaceFormatKHR swapChainSurfaceFormat;
+
+  vk::Extent2D swapChainExtent;
+
   vk::raii::PipelineLayout pipelineLayout = nullptr;
   vk::raii::Pipeline graphicsPipeline = nullptr;
+
   vk::raii::CommandPool commandPool = nullptr;
-  uint32_t queueIndex = ~0;
   vk::raii::CommandBuffer commandBuffer = nullptr;
+
+  vk::raii::Semaphore presentCompleteSemaphore = nullptr;
+  vk::raii::Semaphore renderFinishedSemaphore = nullptr;
+  vk::raii::Fence drawFence = nullptr;
+
+  vk::raii::Queue queue = nullptr;
+  uint32_t queueIndex = ~0;
 
   std::vector<const char *> requiredDeviceExtension = {
       vk::KHRSwapchainExtensionName};
@@ -90,6 +99,15 @@ private:
     createGraphicsPipeline();
     createCommandPool();
     createCommandBuffer();
+    createSyncObjects();
+  }
+
+  void mainLoop() {
+    while (!glfwWindowShouldClose(window)) {
+      glfwPollEvents();
+      drawFrame();
+    }
+    device.waitIdle();
   }
 
   void createInstance() {
@@ -222,14 +240,17 @@ private:
     auto deviceProperties = physicalDevice.getProperties();
     auto deviceFeatures = physicalDevice.getFeatures();
 
+    // Check if the physicalDevice supports the Vulkan 1.3 API version
     bool supportsVulkan1_3 = deviceProperties.apiVersion >= vk::ApiVersion13;
 
+    // Check if any of the queue families support graphics operations
     auto queueFamilies = physicalDevice.getQueueFamilyProperties();
     bool supportsGraphics =
         std::ranges::any_of(queueFamilies, [](auto const &qfp) {
           return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics);
         });
 
+    // Check if all required physicalDevice extensions are available
     auto availableDeviceExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
     bool supportsAllRequiredExtensions = std::ranges::all_of(
@@ -243,6 +264,7 @@ private:
               });
         });
 
+    // Check if the physicalDevice supports the required features
     auto features = physicalDevice.template getFeatures2<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan13Features,
@@ -252,10 +274,13 @@ private:
             .shaderDrawParameters &&
         features.template get<vk::PhysicalDeviceVulkan13Features>()
             .dynamicRendering &&
+        features.template get<vk::PhysicalDeviceVulkan13Features>()
+            .synchronization2 &&
         features
             .template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>()
             .extendedDynamicState;
 
+    // Return true if the physicalDevice meets all the criteria
     return supportsVulkan1_3 && supportsGraphics &&
            supportsAllRequiredExtensions && supportsRequiredFeatures;
   }
@@ -264,12 +289,15 @@ private:
     std::vector<vk::QueueFamilyProperties> queueFamilyProperties =
         physicalDevice.getQueueFamilyProperties();
 
-    uint32_t queueIndex = ~0;
+    // get the first index into queueFamilyProperties which supports both
+    // graphics and present
+    queueIndex = ~0;
     for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size();
          qfpIndex++) {
       if ((queueFamilyProperties[qfpIndex].queueFlags &
            vk::QueueFlagBits::eGraphics) &&
           physicalDevice.getSurfaceSupportKHR(qfpIndex, *surface)) {
+        // found a queue family that supports both graphics and present
         queueIndex = qfpIndex;
         break;
       }
@@ -279,17 +307,22 @@ private:
           "Could not find a queue for graphics and present -> terminating");
     }
 
+    // query for Vulkan 1.3 features
     vk::StructureChain<vk::PhysicalDeviceFeatures2,
                        vk::PhysicalDeviceVulkan11Features,
                        vk::PhysicalDeviceVulkan13Features,
                        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
         featureChain = {
-            {},
-            {.shaderDrawParameters = true},
-            {.dynamicRendering = true},
-            {.extendedDynamicState = true},
+            {}, // vk::PhysicalDeviceFeatures2
+            {.shaderDrawParameters =
+                 true}, // vk::PhysicalDeviceVulkan11Features
+            {.synchronization2 = true,
+             .dynamicRendering = true}, // vk::PhysicalDeviceVulkan13Features
+            {.extendedDynamicState =
+                 true}, // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
         };
 
+    // create a Device
     float queuePriority = 0.5f;
     vk::DeviceQueueCreateInfo deviceQueueCreateInfo{
         .queueFamilyIndex = queueIndex,
@@ -308,7 +341,7 @@ private:
 
     device = vk::raii::Device(physicalDevice, deviceCreateInfo);
 
-    graphicsQueue = vk::raii::Queue(device, queueIndex, 0);
+    queue = vk::raii::Queue(device, queueIndex, 0);
   }
 
   vk::SurfaceFormatKHR chooseSwapSurfaceFormat(
@@ -413,10 +446,15 @@ private:
     }
   }
 
-  void mainLoop() {
-    while (!glfwWindowShouldClose(window)) {
-      glfwPollEvents();
-    }
+  void createSyncObjects() {
+    presentCompleteSemaphore =
+        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo{});
+    renderFinishedSemaphore =
+        vk::raii::Semaphore(device, vk::SemaphoreCreateInfo{});
+    drawFence =
+        vk::raii::Fence(device, vk::FenceCreateInfo{
+                                    .flags = vk::FenceCreateFlagBits::eSignaled,
+                                });
   }
 
   void cleanup() {
@@ -586,11 +624,17 @@ private:
 
   void recordCommandBuffer(uint32_t imageIndex) {
     commandBuffer.begin({});
-    transition_image_layout(imageIndex, vk::ImageLayout::eUndefined,
-                            vk::ImageLayout::eColorAttachmentOptimal, {},
-                            vk::AccessFlagBits2::eColorAttachmentWrite,
-                            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                            vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+
+    // Before starting rendering, transition the swapchain image to
+    // vk::ImageLayout::eColorAttachmentOptimal
+    transition_image_layout(
+        imageIndex, vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eColorAttachmentOptimal,
+        {}, // srcAccessMask (no need to wait for previous operations)
+        vk::AccessFlagBits2::eColorAttachmentWrite,         // dstAccessMask
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput  // dstStage
+    );
     vk::ClearValue clearValue = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
     vk::RenderingAttachmentInfo attachInfo = {
         .imageView = swapChainImageViews[imageIndex],
@@ -620,23 +664,73 @@ private:
                              vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
     commandBuffer.draw(3, 1, 0, 0);
     commandBuffer.endRendering();
-    transition_image_layout(imageIndex,
-                            vk::ImageLayout::eColorAttachmentOptimal,
-                            vk::ImageLayout::ePresentSrcKHR,
-                            vk::AccessFlagBits2::eColorAttachmentWrite, {},
-                            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                            vk::PipelineStageFlagBits2::eBottomOfPipe);
+
+    // After rendering, transition the swapchain image to
+    // vk::ImageLayout::ePresentSrcKHR
+    transition_image_layout(
+        imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::ePresentSrcKHR,
+        vk::AccessFlagBits2::eColorAttachmentWrite,         // srcAccessMask
+        {},                                                 // dstAccessMask
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+        vk::PipelineStageFlagBits2::eBottomOfPipe           // dstStage
+    );
     commandBuffer.end();
   }
 
-  int main() {
-    try {
-      HelloTriangleApplication app;
-      app.run();
-    } catch (const std::exception &e) {
-      std::cerr << e.what() << std::endl;
-      return EXIT_FAILURE;
+  void drawFrame() {
+    auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+    if (fenceResult != vk::Result::eSuccess) {
+      throw std::runtime_error("Failed to wait for fence");
     }
+    device.resetFences(*drawFence);
+    auto [result, imageIndex] = swapChain.acquireNextImage(
+        UINT64_MAX, *presentCompleteSemaphore, nullptr);
 
-    return EXIT_SUCCESS;
+    recordCommandBuffer(imageIndex);
+
+    vk::PipelineStageFlags waitDestinationStageMask(
+        vk::PipelineStageFlagBits::eColorAttachmentOutput);
+    const vk::SubmitInfo submitInfo = {
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &*presentCompleteSemaphore,
+        .pWaitDstStageMask = &waitDestinationStageMask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*commandBuffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &*renderFinishedSemaphore,
+    };
+    queue.submit(submitInfo, *drawFence);
+
+    const vk::PresentInfoKHR presentInfoKHR = {
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &*renderFinishedSemaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &*swapChain,
+        .pImageIndices = &imageIndex,
+    };
+    result = queue.presentKHR(presentInfoKHR);
+    switch (result) {
+    case vk::Result::eSuccess:
+      break;
+    case vk::Result::eSuboptimalKHR:
+      std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR "
+                   "!\n";
+      break;
+    default:
+      break; // an unexpected result is returned!
+    }
   }
+};
+
+int main() {
+  try {
+    HelloTriangleApplication app;
+    app.run();
+  } catch (const std::exception &e) {
+    std::cerr << e.what() << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  return EXIT_SUCCESS;
+}
