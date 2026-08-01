@@ -8,9 +8,12 @@ import vulkan_hpp;
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <glm/glm.hpp>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -42,6 +45,35 @@ static std::vector<char> readFile(const std::string &filename) {
   return buffer;
 }
 
+struct Vertex {
+  glm::vec2 pos;
+  glm::vec3 color;
+
+  static vk::VertexInputBindingDescription getBindingDescription() {
+    return {
+        .binding = 0,
+        .stride = sizeof(Vertex),
+        .inputRate = vk::VertexInputRate::eVertex,
+    };
+  }
+
+  static std::array<vk::VertexInputAttributeDescription, 2>
+  getAttributeDescriptions() {
+    return {{{.location = 0,
+              .binding = 0,
+              .format = vk::Format::eR32G32Sfloat,
+              .offset = offsetof(Vertex, pos)},
+             {.location = 1,
+              .binding = 0,
+              .format = vk::Format::eR32G32B32Sfloat,
+              .offset = offsetof(Vertex, color)}}};
+  }
+};
+
+const std::vector<Vertex> vertices = {{{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+                                      {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}};
+
 class HelloTriangleApplication {
 public:
   void run() {
@@ -69,6 +101,9 @@ private:
 
   vk::raii::PipelineLayout pipelineLayout = nullptr;
   vk::raii::Pipeline graphicsPipeline = nullptr;
+
+  vk::raii::Buffer vertexBuffer = nullptr;
+  vk::raii::DeviceMemory vertexBufferMemory = nullptr;
 
   vk::raii::CommandPool commandPool = nullptr;
   std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -111,6 +146,7 @@ private:
     createImageViews();
     createGraphicsPipeline();
     createCommandPool();
+    createVertexBuffer();
     createCommandBuffer();
     createSyncObjects();
   }
@@ -138,7 +174,8 @@ private:
       requiredLayers.assign(validationLayers.begin(), validationLayers.end());
     }
 
-    // Check if the required layers are supported by the Vulkan implementation.
+    // Check if the required layers are supported by the Vulkan
+    // implementation.
     auto layerProperties = context.enumerateInstanceLayerProperties();
     auto unsupportedLayerIt = std::ranges::find_if(
         requiredLayers, [&layerProperties](auto const &requiredLayer) {
@@ -535,7 +572,15 @@ private:
         .scissorCount = 1,
     };
 
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &bindingDescription,
+        .vertexAttributeDescriptionCount =
+            static_cast<uint32_t>(attributeDescriptions.size()),
+        .pVertexAttributeDescriptions = attributeDescriptions.data(),
+    };
 
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
         .topology = vk::PrimitiveTopology::eTriangleList};
@@ -615,6 +660,45 @@ private:
     commandPool = vk::raii::CommandPool(device, poolInfo);
   }
 
+  uint32_t findMemoryType(uint32_t typeFilter,
+                          vk::MemoryPropertyFlags properties) {
+    vk::PhysicalDeviceMemoryProperties memProperties =
+        physicalDevice.getMemoryProperties();
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+      if ((typeFilter & (1 << i)) &&
+          (memProperties.memoryTypes[i].propertyFlags & properties) ==
+              properties) {
+        return i;
+      }
+    }
+    throw std::runtime_error("Failed to find suitable memory type");
+  }
+
+  void createVertexBuffer() {
+    vk::BufferCreateInfo bufferInfo{
+        .size = sizeof(vertices) * vertices.size(),
+        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+        .sharingMode = vk::SharingMode::eExclusive,
+    };
+    vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+    vk::MemoryRequirements memRequirements =
+        vertexBuffer.getMemoryRequirements();
+    vk::MemoryAllocateInfo memoryAllocateInfo{
+        .allocationSize = memRequirements.size,
+        .memoryTypeIndex =
+            findMemoryType(memRequirements.memoryTypeBits,
+                           vk::MemoryPropertyFlagBits::eHostVisible |
+                               vk::MemoryPropertyFlagBits::eHostCoherent),
+    };
+
+    vertexBufferMemory = vk::raii::DeviceMemory(device, memoryAllocateInfo);
+    vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+
+    void *data = vertexBufferMemory.mapMemory(0, memRequirements.size);
+    memcpy(data, vertices.data(), bufferInfo.size);
+    vertexBufferMemory.unmapMemory();
+  }
+
   void createCommandBuffer() {
     vk::CommandBufferAllocateInfo allocInfo{
         .commandPool = commandPool,
@@ -658,6 +742,7 @@ private:
   }
 
   void recordCommandBuffer(uint32_t imageIndex) {
+    auto &commandBuffer = commandBuffers[frameIndex];
     commandBuffer.begin({});
 
     // Before starting rendering, transition the swapchain image to
@@ -691,13 +776,14 @@ private:
     commandBuffer.beginRendering(renderingInfo);
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
                                *graphicsPipeline);
+    commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
     commandBuffer.setViewport(
         0,
         vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
                      static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
     commandBuffer.setScissor(0,
                              vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-    commandBuffer.draw(3, 1, 0, 0);
+    commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
     commandBuffer.endRendering();
 
     // After rendering, transition the swapchain image to
