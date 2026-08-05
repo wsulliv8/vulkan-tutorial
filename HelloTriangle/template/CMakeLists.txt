@@ -122,6 +122,5 @@ add_slang_shader_target(${SHADER_TARGET} SOURCES ${SHADER_SOURCES})
 add_dependencies(${TEMPLATE_NAME} ${SHADER_TARGET})
 
 # Assets
-set (ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../assets/")
-file (COPY ${ASSET_DIR}/viking_room.obj DESTINATION ${TEMPLATE_DIR}/models)
-file (COPY ${ASSET_DIR}/viking_room.png DESTINATION ${TEMPLATE_DIR}/textures)
+file (COPY "${CMAKE_CURRENT_SOURCE_DIR}/../models" DESTINATION ${TEMPLATE_DIR})
+file (COPY "${CMAKE_CURRENT_SOURCE_DIR}/../textures" DESTINATION ${TEMPLATE_DIR})
